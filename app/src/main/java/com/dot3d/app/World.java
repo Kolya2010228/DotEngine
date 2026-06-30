@@ -71,7 +71,7 @@ public final class World {
         return BIOME[4];
     }
 
-    /** Render the surface cubes within renderDistChunks of the camera. Returns cube count. */
+    /** Render the surface columns within renderDistChunks of the camera. Returns column count. */
     public int emitNear(Renderer r, Vec3 camPos, int renderDistChunks) {
         int ccx = (int) Math.floor(camPos.x / CHUNK);
         int ccz = (int) Math.floor(camPos.z / CHUNK);
@@ -88,7 +88,11 @@ public final class World {
                         float dzh = (wz + 0.5f) - camPos.z;
                         if (dxh * dxh + dzh * dzh > maxD2) continue;
                         int h = heightAt(wx, wz);
-                        r.renderCube(wx + 0.5f, h - 0.5f, wz + 0.5f, colorForHeight(h));
+                        int hE = heightAt(wx + 1, wz);
+                        int hW = heightAt(wx - 1, wz);
+                        int hS = heightAt(wx, wz + 1);
+                        int hN = heightAt(wx, wz - 1);
+                        r.renderColumn(wx, wz, h, hE, hW, hS, hN, colorForHeight(h));
                         count++;
                     }
                 }

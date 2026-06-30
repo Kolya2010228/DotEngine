@@ -4,36 +4,29 @@ import java.util.List;
 
 /**
  * Software 3D renderer into a W x H character framebuffer with a per-cell depth
- * buffer. Allocation-free hot path: the camera basis is computed once per frame,
- * cubes are rendered by projecting their 8 corners into reusable arrays and
- * rasterizing only the camera-facing faces.
+ * buffer. Allocation-free hot path: camera basis computed once per frame.
+ * Terrain is drawn as solid columns (top face + side walls down to the
+ * neighbouring column height) so there are no see-through gaps.
  */
 public final class Renderer {
     public int W, H;
     public float[] depth;      // z-buffer (camera-space depth)
     public float[] glyphLum;   // luminance per cell [0,1]
     public int[] color;        // 0xRRGGBB per cell, -1 = sky
-    public float aspect = 1f;  // pixel aspect of the displayed grid (set by EngineView)
+    public float aspect = 1f;
 
-    // light direction (normalized): (-0.4,-1,-0.3)
     private static final float LX = -0.3578f, LY = -0.8944f, LZ = -0.2683f;
 
     private float camx, camy, camz;
     private float fx, fy, fz, rx, ry, rz, ux, uy, uz, tanHalf;
 
-    // reusable corner buffers
-    private final float[] csx = new float[8];
-    private final float[] csy = new float[8];
-    private final float[] cdep = new float[8];
-    private final boolean[] cok = new boolean[8];
+    // reusable quad projection buffers
+    private final float[] qx = new float[4];
+    private final float[] qy = new float[4];
+    private final float[] qd = new float[4];
+    private final boolean[] qok = new boolean[4];
 
-    // cube corner offsets
-    private static final float[][] OFF = {
-            {-0.5f, -0.5f, -0.5f}, {0.5f, -0.5f, -0.5f}, {0.5f, 0.5f, -0.5f}, {-0.5f, 0.5f, -0.5f},
-            {-0.5f, -0.5f, 0.5f}, {0.5f, -0.5f, 0.5f}, {0.5f, 0.5f, 0.5f}, {-0.5f, 0.5f, 0.5f}
-    };
-
-    // precomputed luminance per cube face: 0=+X 1=-X 2=+Y 3=-Y 4=+Z 5=-Z
+    // face luminance: 0=+X 1=-X 2=+Y(top) 3=-Y 4=+Z 5=-Z
     private final float[] faceLum = new float[6];
 
     public Renderer(int w, int h) {
@@ -68,48 +61,70 @@ public final class Renderer {
         camx = cam.pos.x; camy = cam.pos.y; camz = cam.pos.z;
         Vec3 f = cam.forward();
         fx = f.x; fy = f.y; fz = f.z;
-        // right = normalize(cross(f, (0,1,0))) = normalize((-fz,0,fx))
         float rlen = (float) Math.sqrt(fz * fz + fx * fx);
         if (rlen < 1e-5f) rlen = 1e-5f;
         rx = -fz / rlen; ry = 0; rz = fx / rlen;
-        // up = cross(right, f)
         ux = ry * fz - rz * fy;
         uy = rz * fx - rx * fz;
         uz = rx * fy - ry * fx;
         tanHalf = (float) Math.tan(Math.toRadians(cam.fovDeg) / 2.0);
     }
 
-    private void projCorner(int i, float wx, float wy, float wz) {
+    private boolean projQ(int i, float wx, float wy, float wz) {
         float dx = wx - camx, dy = wy - camy, dz = wz - camz;
         float cz = dx * fx + dy * fy + dz * fz;
-        if (cz <= 0.05f) { cok[i] = false; return; }
+        if (cz <= 0.05f) { qok[i] = false; return false; }
         float cx = dx * rx + dy * ry + dz * rz;
         float cy = dx * ux + dy * uy + dz * uz;
         float ndcX = cx / (cz * tanHalf * aspect);
         float ndcY = cy / (cz * tanHalf);
-        csx[i] = (ndcX * 0.5f + 0.5f) * W;
-        csy[i] = (1f - (ndcY * 0.5f + 0.5f)) * H;
-        cdep[i] = cz;
-        cok[i] = true;
+        qx[i] = (ndcX * 0.5f + 0.5f) * W;
+        qy[i] = (1f - (ndcY * 0.5f + 0.5f)) * H;
+        qd[i] = cz;
+        qok[i] = true;
+        return true;
     }
 
-    /** Render one axis-aligned unit cube centered at (cx,cy,cz). */
-    public void renderCube(float cx, float cy, float cz, int col) {
-        for (int i = 0; i < 8; i++) {
-            projCorner(i, cx + OFF[i][0], cy + OFF[i][1], cz + OFF[i][2]);
+    /** Project 4 world points (already in qx/qy/qd via projQ) into 2 triangles. */
+    private void quad(float lum, int col) {
+        if (!qok[0] || !qok[1] || !qok[2] || !qok[3]) return;
+        rasterize(qx[0], qy[0], qd[0], qx[1], qy[1], qd[1], qx[2], qy[2], qd[2], lum, col);
+        rasterize(qx[0], qy[0], qd[0], qx[2], qy[2], qd[2], qx[3], qy[3], qd[3], lum, col);
+    }
+
+    /**
+     * Render a solid terrain column occupying [wx,wx+1] x [0,h] x [wz,wz+1].
+     * Side walls are drawn only where this column is taller than the neighbour,
+     * down to the neighbour's height, producing a watertight surface.
+     */
+    public void renderColumn(int wx, int wz, float h,
+                             float hE, float hW, float hS, float hN, int col) {
+        float x0 = wx, x1 = wx + 1, z0 = wz, z1 = wz + 1;
+
+        // top face (+Y)
+        projQ(0, x0, h, z0); projQ(1, x1, h, z0); projQ(2, x1, h, z1); projQ(3, x0, h, z1);
+        quad(faceLum[2], col);
+
+        // east wall (+X) at x1
+        if (h > hE && camx > x1) {
+            projQ(0, x1, h, z0); projQ(1, x1, h, z1); projQ(2, x1, hE, z1); projQ(3, x1, hE, z0);
+            quad(faceLum[0], col);
         }
-        if (camx > cx + 0.5f) face(1, 5, 6, 2, faceLum[0], col);
-        if (camx < cx - 0.5f) face(0, 4, 7, 3, faceLum[1], col);
-        if (camy > cy + 0.5f) face(3, 2, 6, 7, faceLum[2], col);
-        if (camy < cy - 0.5f) face(0, 1, 5, 4, faceLum[3], col);
-        if (camz > cz + 0.5f) face(4, 5, 6, 7, faceLum[4], col);
-        if (camz < cz - 0.5f) face(0, 1, 2, 3, faceLum[5], col);
-    }
-
-    private void face(int a, int b, int c, int d, float lum, int col) {
-        if (!cok[a] || !cok[b] || !cok[c] || !cok[d]) return;
-        rasterize(csx[a], csy[a], cdep[a], csx[b], csy[b], cdep[b], csx[c], csy[c], cdep[c], lum, col);
-        rasterize(csx[a], csy[a], cdep[a], csx[c], csy[c], cdep[c], csx[d], csy[d], cdep[d], lum, col);
+        // west wall (-X) at x0
+        if (h > hW && camx < x0) {
+            projQ(0, x0, h, z1); projQ(1, x0, h, z0); projQ(2, x0, hW, z0); projQ(3, x0, hW, z1);
+            quad(faceLum[1], col);
+        }
+        // south wall (+Z) at z1
+        if (h > hS && camz > z1) {
+            projQ(0, x1, h, z1); projQ(1, x0, h, z1); projQ(2, x0, hS, z1); projQ(3, x1, hS, z1);
+            quad(faceLum[4], col);
+        }
+        // north wall (-Z) at z0
+        if (h > hN && camz < z0) {
+            projQ(0, x0, h, z0); projQ(1, x1, h, z0); projQ(2, x1, hN, z0); projQ(3, x0, hN, z0);
+            quad(faceLum[5], col);
+        }
     }
 
     /** Render a list of world-space triangles (used for loaded .obj models). */
@@ -118,14 +133,14 @@ public final class Renderer {
             Tri t = tris.get(i);
             float vx = camx - t.a.x, vy = camy - t.a.y, vz = camz - t.a.z;
             if (t.normal.x * vx + t.normal.y * vy + t.normal.z * vz <= 0) continue;
-            projCorner(0, t.a.x, t.a.y, t.a.z);
-            projCorner(1, t.b.x, t.b.y, t.b.z);
-            projCorner(2, t.c.x, t.c.y, t.c.z);
-            if (!cok[0] || !cok[1] || !cok[2]) continue;
+            projQ(0, t.a.x, t.a.y, t.a.z);
+            projQ(1, t.b.x, t.b.y, t.b.z);
+            projQ(2, t.c.x, t.c.y, t.c.z);
+            if (!qok[0] || !qok[1] || !qok[2]) continue;
             float d = -(t.normal.x * LX + t.normal.y * LY + t.normal.z * LZ);
             if (d < 0) d = 0;
             float lum = 0.25f + 0.75f * d;
-            rasterize(csx[0], csy[0], cdep[0], csx[1], csy[1], cdep[1], csx[2], csy[2], cdep[2], lum, t.color);
+            rasterize(qx[0], qy[0], qd[0], qx[1], qy[1], qd[1], qx[2], qy[2], qd[2], lum, t.color);
         }
     }
 
