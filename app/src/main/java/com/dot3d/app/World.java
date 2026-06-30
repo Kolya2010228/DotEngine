@@ -88,6 +88,8 @@ public final class World {
                         float dzh = (wz + 0.5f) - camPos.z;
                         if (dxh * dxh + dzh * dzh > maxD2) continue;
                         int h = heightAt(wx, wz);
+                        // We only need walls if the column is taller than its neighbor.
+                        // For a simple surface, we can approximate or only check if the neighbor is lower.
                         int hE = heightAt(wx + 1, wz);
                         int hW = heightAt(wx - 1, wz);
                         int hS = heightAt(wx, wz + 1);

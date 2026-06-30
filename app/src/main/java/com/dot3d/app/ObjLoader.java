@@ -19,6 +19,7 @@ public final class ObjLoader {
             line = line.trim();
             if (line.isEmpty() || line.startsWith("#")) continue;
             String[] tok = line.split("\\s+");
+            if (tok.length == 0) continue;
             if (tok[0].equals("v") && tok.length >= 4) {
                 verts.add(new Vec3(
                         Float.parseFloat(tok[1]),

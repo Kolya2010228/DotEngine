@@ -21,7 +21,7 @@ public final class Camera {
     }
 
     public Vec3 right() {
-        return forwardFlat().cross(new Vec3(0, 1, 0)).normalized();
+        return new Vec3(0, 1, 0).cross(forwardFlat()).normalized();
     }
 
     public void addYaw(float d) { yaw += d; }

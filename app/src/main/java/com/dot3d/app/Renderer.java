@@ -157,7 +157,7 @@ public final class Renderer {
         if (minX > maxX || minY > maxY) return;
 
         float area = (cx - ax) * (by - ay) - (cy - ay) * (bx - ax);
-        if (area < 1e-5f && area > -1e-5f) return;
+        if (Math.abs(area) < 1e-7f) return;
         float invArea = 1f / area;
 
         for (int y = minY; y <= maxY; y++) {

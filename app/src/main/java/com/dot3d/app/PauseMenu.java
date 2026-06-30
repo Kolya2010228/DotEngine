@@ -44,7 +44,11 @@ public final class PauseMenu extends LinearLayout {
         addView(color);
 
         // seed
-        final EditText seed = number("World seed", (int) s.seed());
+        final EditText seed = new EditText(ctx);
+        seed.setInputType(android.text.InputType.TYPE_CLASS_NUMBER | android.text.InputType.TYPE_NUMBER_FLAG_SIGNED);
+        seed.setHint("World seed");
+        seed.setText(String.valueOf(s.seed()));
+        seed.setTextColor(0xFFFFFFFF);
         addView(label("Seed"));
         addView(seed);
 
@@ -82,12 +86,22 @@ public final class PauseMenu extends LinearLayout {
 
     private void apply(Settings s, EditText gw, EditText gh, EditText pal, CheckBox color,
                        EditText seed, SeekBar sens, SeekBar fov, SeekBar rd) {
-        try { s.setGrid(parse(gw, s.gridW()), parse(gh, s.gridH())); } catch (Exception ignored) {}
+        try {
+            int w = parse(gw, s.gridW());
+            int h = parse(gh, s.gridH());
+            if (w >= 10 && w <= 200 && h >= 10 && h <= 200) {
+                s.setGrid(w, h);
+            }
+        } catch (Exception ignored) {}
         String p = pal.getText().toString().trim();
         String preset = Palette.presetByName(p);
         s.setPalette(preset != null ? preset : (p.isEmpty() ? s.palette() : p));
         s.setColor(color.isChecked());
-        s.setSeed(parse(seed, (int) s.seed()));
+        try {
+            s.setSeed(Long.parseLong(seed.getText().toString().trim()));
+        } catch (Exception e) {
+            // keep existing seed on parse error
+        }
         s.setSensitivity(Math.max(1, sens.getProgress()) / 2000f);
         s.setFov(Math.max(40, fov.getProgress()));
         s.setRenderDist(Math.max(1, rd.getProgress()));
