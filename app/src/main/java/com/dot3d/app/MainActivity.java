@@ -13,7 +13,7 @@ import java.io.InputStream;
 /**
  * Hosts the terminal and the engine. Flow: terminal -> `run` launches EngineView;
  * Back during the engine opens the PauseMenu overlay; "Exit to terminal" returns
- * to the terminal.
+ * to the terminal. Forced landscape + immersive fullscreen.
  */
 public final class MainActivity extends Activity implements Terminal.Host {
     private FrameLayout root;
@@ -22,6 +22,7 @@ public final class MainActivity extends Activity implements Terminal.Host {
     private PauseMenu pauseMenu;
     private Settings settings;
     private Terminal cmd;
+    private Mesh pendingModel = null;
 
     private enum Mode { TERMINAL, ENGINE, MENU }
     private Mode mode = Mode.TERMINAL;
@@ -40,10 +41,26 @@ public final class MainActivity extends Activity implements Terminal.Host {
             if ("\u0001CLEAR".equals(line)) return;
             cmd.exec(line);
         });
-        // intercept CLEAR sentinel through print
         root.addView(terminal);
         setContentView(root);
         mode = Mode.TERMINAL;
+        hideSystemUi();
+    }
+
+    @Override public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) hideSystemUi();
+    }
+
+    private void hideSystemUi() {
+        View d = getWindow().getDecorView();
+        d.setSystemUiVisibility(
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                        | View.SYSTEM_UI_FLAG_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                        | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
     }
 
     @Override public void launchEngine() {
@@ -89,7 +106,7 @@ public final class MainActivity extends Activity implements Terminal.Host {
             case ENGINE: openMenu(); break;
             case MENU: closeMenu(); break;
             case TERMINAL:
-            default: super.onBackPressed(); // normal: leave app
+            default: super.onBackPressed();
         }
     }
 
@@ -111,8 +128,6 @@ public final class MainActivity extends Activity implements Terminal.Host {
             }
         }
     }
-
-    private Mesh pendingModel = null;
 
     @Override protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);

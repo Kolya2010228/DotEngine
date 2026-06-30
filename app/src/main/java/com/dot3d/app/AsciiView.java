@@ -5,31 +5,35 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffColorFilter;
 import android.graphics.Rect;
 import android.graphics.Typeface;
 
+import java.util.HashMap;
+
 /**
- * Renders the character framebuffer fast using a pre-rasterized glyph atlas.
- * Each printable ASCII glyph (0x20..0x7E) is drawn once into an atlas bitmap;
- * each frame we blit cells from the atlas and tint by color. This avoids a
- * Canvas.drawText call per cell.
+ * Fast ASCII blit via a pre-rasterized glyph atlas. Each printable glyph is
+ * drawn once into an atlas bitmap; each frame cells are blitted from the atlas
+ * and tinted. Color filters are cached (the tint set is small and discrete), so
+ * the hot path allocates nothing.
  */
 public final class AsciiView {
     private static final int FIRST = 0x20, LAST = 0x7E;
-    private final Bitmap atlas;          // white glyphs on transparent
+    private final Bitmap atlas;
     private final int cellW, cellH;
     private final Paint blit = new Paint();
     private final Rect src = new Rect();
     private final Rect dst = new Rect();
+    private final HashMap<Integer, PorterDuffColorFilter> filterCache = new HashMap<>();
 
     public AsciiView(Context ctx, int cellPx) {
         this.cellH = cellPx;
-        // monospace: measure width
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         p.setTypeface(Typeface.MONOSPACE);
         p.setTextSize(cellPx);
         p.setColor(Color.WHITE);
-        this.cellW = (int) Math.ceil(p.measureText("M"));
+        this.cellW = Math.max(1, (int) Math.ceil(p.measureText("M")));
         int count = LAST - FIRST + 1;
         atlas = Bitmap.createBitmap(cellW * count, cellH, Bitmap.Config.ARGB_8888);
         Canvas ac = new Canvas(atlas);
@@ -45,36 +49,44 @@ public final class AsciiView {
     public int cellW() { return cellW; }
     public int cellH() { return cellH; }
 
-    /** Draw the framebuffer to the canvas. */
+    private PorterDuffColorFilter filter(int tint) {
+        PorterDuffColorFilter f = filterCache.get(tint);
+        if (f == null) {
+            f = new PorterDuffColorFilter(tint, PorterDuff.Mode.SRC_IN);
+            filterCache.put(tint, f);
+        }
+        return f;
+    }
+
     public void draw(Canvas c, Renderer r, Palette palette, boolean color, int bg) {
         c.drawColor(bg);
-        for (int y = 0; y < r.H; y++) {
-            for (int x = 0; x < r.W; x++) {
-                int idx = y * r.W + x;
+        int W = r.W, H = r.H;
+        for (int y = 0; y < H; y++) {
+            int row = y * W;
+            int dy = y * cellH;
+            for (int x = 0; x < W; x++) {
+                int idx = row + x;
                 int col = r.color[idx];
-                char glyph;
-                int tint;
-                if (col < 0) {
-                    continue; // sky: leave background
-                }
-                glyph = palette.glyph(r.glyphLum[idx]);
+                if (col < 0) continue; // sky
+                float lum = r.glyphLum[idx];
+                char glyph = palette.glyph(lum);
                 if (glyph == ' ') continue;
+                int tint;
                 if (color) {
-                    // modulate base color by luminance
-                    float l = 0.4f + 0.6f * r.glyphLum[idx];
+                    float l = 0.4f + 0.6f * lum;
                     int rr = (int) (((col >> 16) & 0xFF) * l);
                     int gg = (int) (((col >> 8) & 0xFF) * l);
                     int bb = (int) ((col & 0xFF) * l);
                     tint = Color.rgb(rr, gg, bb);
                 } else {
-                    int g = (int) (255 * r.glyphLum[idx]);
+                    int g = (int) (255 * lum);
                     tint = Color.rgb(g, g, g);
                 }
                 int gi = glyph - FIRST;
                 src.set(gi * cellW, 0, gi * cellW + cellW, cellH);
-                int dx = x * cellW, dy = y * cellH;
+                int dx = x * cellW;
                 dst.set(dx, dy, dx + cellW, dy + cellH);
-                blit.setColorFilter(new android.graphics.PorterDuffColorFilter(tint, android.graphics.PorterDuff.Mode.SRC_IN));
+                blit.setColorFilter(filter(tint));
                 c.drawBitmap(atlas, src, dst, blit);
             }
         }

@@ -8,15 +8,13 @@ import android.view.MotionEvent;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 
-import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * The running engine: a SurfaceView with a dedicated render thread. Builds the
- * scene (infinite cube world + optional loaded model) each frame, runs the
- * software renderer, and blits ASCII via AsciiView. Handles movement, gravity,
- * look and jump from Controls.
+ * The running engine: a SurfaceView with a dedicated render thread. Renders the
+ * infinite cube world (+ optional loaded model) via the software renderer and
+ * blits ASCII through AsciiView. Handles movement, gravity, look and jump.
  */
 public final class EngineView extends SurfaceView implements SurfaceHolder.Callback, Runnable {
     private Thread thread;
@@ -28,19 +26,21 @@ public final class EngineView extends SurfaceView implements SurfaceHolder.Callb
     private AsciiView ascii;
     private Palette palette;
     private boolean colorOn;
+    private int builtW = -1, builtH = -1;
 
     private final Camera cam = new Camera();
     private World world;
     private Physics physics;
     private final Controls controls;
-    private final Mesh cubeMesh;
-    private Mesh loadedModel = null;
-    private Vec3 modelPos = new Vec3(0, 30, 0);
+    private List<Tri> modelTris = null;
+    private final Vec3 modelPos = new Vec3(0, 30, 0);
 
     private final Paint ui = new Paint(Paint.ANTI_ALIAS_FLAG);
-
-    private int gridW, gridH;
     private float walkSpeed = 6f;
+    private final float density;
+
+    private float fps = 0f;
+    private int lastCubes = 0;
 
     public interface MenuListener { void onOpenMenu(); }
     private MenuListener menuListener;
@@ -49,9 +49,8 @@ public final class EngineView extends SurfaceView implements SurfaceHolder.Callb
         super(ctx);
         this.settings = settings;
         getHolder().addCallback(this);
-        float density = getResources().getDisplayMetrics().density;
+        density = getResources().getDisplayMetrics().density;
         controls = new Controls(density);
-        cubeMesh = Cube.unitCube();
         applySettings();
         setFocusable(true);
     }
@@ -59,21 +58,25 @@ public final class EngineView extends SurfaceView implements SurfaceHolder.Callb
     public void setMenuListener(MenuListener l) { this.menuListener = l; }
 
     public void applySettings() {
-        gridW = settings.gridW();
-        gridH = settings.gridH();
         palette = new Palette(settings.palette());
         colorOn = settings.color();
         cam.fovDeg = settings.fov();
         if (world == null) world = new World(settings.seed());
         else world.setSeed(settings.seed());
         if (physics == null) physics = new Physics(world);
+        // force buffers to rebuild against possibly-changed grid size
+        builtW = -1; builtH = -1;
     }
 
-    public void setLoadedModel(Mesh m) { this.loadedModel = m; }
+    public void setLoadedModel(Mesh m) {
+        List<Tri> out = new ArrayList<>();
+        m.emit(out, modelPos, 6f, 0xE0A030);
+        modelTris = out;
+    }
 
     public void setPaused(boolean p) {
         this.paused = p;
-        if (!p) applySettings(); // settings may have changed in the menu
+        if (!p) applySettings();
     }
 
     @Override public void surfaceCreated(SurfaceHolder holder) {
@@ -84,6 +87,7 @@ public final class EngineView extends SurfaceView implements SurfaceHolder.Callb
 
     @Override public void surfaceChanged(SurfaceHolder holder, int format, int w, int h) {
         controls.setSize(w, h);
+        builtW = -1; builtH = -1;
     }
 
     @Override public void surfaceDestroyed(SurfaceHolder holder) {
@@ -97,7 +101,6 @@ public final class EngineView extends SurfaceView implements SurfaceHolder.Callb
     }
 
     @Override public void run() {
-        // place camera above terrain at spawn
         cam.pos = new Vec3(0.5f, world.heightAt(0, 0) + physics.eyeHeight + 2, 0.5f);
         long last = System.nanoTime();
         while (running) {
@@ -105,6 +108,7 @@ public final class EngineView extends SurfaceView implements SurfaceHolder.Callb
             float dt = (now - last) / 1e9f;
             if (dt > 0.05f) dt = 0.05f;
             last = now;
+            if (dt > 0) fps += ((1f / dt) - fps) * 0.1f;
 
             if (!paused) {
                 update(dt);
@@ -116,43 +120,39 @@ public final class EngineView extends SurfaceView implements SurfaceHolder.Callb
     }
 
     private void ensureBuffers() {
-        if (renderer == null || renderer.W != gridW || renderer.H != gridH) {
-            renderer = new Renderer(gridW, gridH);
-        }
-        if (ascii == null) {
-            int cell = Math.max(6, getHeight() / Math.max(1, gridH));
-            ascii = new AsciiView(getContext(), cell);
-        }
+        int gw = settings.gridW(), gh = settings.gridH();
+        if (renderer != null && builtW == gw && builtH == gh && ascii != null) return;
+        renderer = new Renderer(gw, gh);
+        int sw = getWidth(), sh = getHeight();
+        if (sw <= 0) sw = getResources().getDisplayMetrics().widthPixels;
+        if (sh <= 0) sh = getResources().getDisplayMetrics().heightPixels;
+        int cellPx = Math.max(5, Math.min(sh / gh, (int) (sw / (gw * 0.62f))));
+        ascii = new AsciiView(getContext(), cellPx);
+        renderer.aspect = (gw * (float) ascii.cellW()) / (gh * (float) ascii.cellH());
+        builtW = gw; builtH = gh;
     }
 
     private void update(float dt) {
-        // look
         float[] look = controls.consumeLook();
         float sens = settings.sensitivity();
         cam.addYaw(look[0] * sens);
         cam.addPitch(-look[1] * sens);
 
-        // walk
         Vec3 fwd = cam.forwardFlat();
         Vec3 right = cam.right();
         Vec3 move = fwd.scale(-controls.moveY).add(right.scale(controls.moveX));
         cam.pos.x += move.x * walkSpeed * dt;
         cam.pos.z += move.z * walkSpeed * dt;
 
-        // jump + gravity
         if (controls.consumeJump()) physics.jump();
         physics.step(cam, dt);
     }
 
     private void drawFrame() {
         ensureBuffers();
-        // build scene
-        List<Tri> tris = new ArrayList<>();
-        world.emitNear(tris, cam.pos, settings.renderDist(), cubeMesh);
-        if (loadedModel != null) {
-            loadedModel.emit(tris, modelPos, 6f, 0xE0A030);
-        }
-        renderer.render(tris, cam);
+        renderer.beginFrame(cam);
+        lastCubes = world.emitNear(renderer, cam.pos, settings.renderDist());
+        if (modelTris != null) renderer.renderTris(modelTris);
 
         SurfaceHolder h = getHolder();
         Canvas c = h.lockCanvas();
@@ -160,29 +160,42 @@ public final class EngineView extends SurfaceView implements SurfaceHolder.Callb
         try {
             ascii.draw(c, renderer, palette, colorOn, Color.BLACK);
             drawUi(c);
+            if (settings.debug()) drawHud(c);
         } finally {
             h.unlockCanvasAndPost(c);
         }
     }
 
     private void drawUi(Canvas c) {
-        // joystick
         if (controls.joyActive) {
             ui.setStyle(Paint.Style.STROKE);
             ui.setStrokeWidth(4);
             ui.setColor(0x66FFFFFF);
-            c.drawCircle(controls.joyCxOut, controls.joyCyOut, 120 * getResources().getDisplayMetrics().density, ui);
+            c.drawCircle(controls.joyCxOut, controls.joyCyOut, 120 * density, ui);
             ui.setStyle(Paint.Style.FILL);
             ui.setColor(0x99FFFFFF);
-            c.drawCircle(controls.joyKnobX, controls.joyKnobY, 40 * getResources().getDisplayMetrics().density, ui);
+            c.drawCircle(controls.joyKnobX, controls.joyKnobY, 40 * density, ui);
         }
-        // jump button
         ui.setStyle(Paint.Style.FILL);
         ui.setColor(0x55FFFFFF);
         c.drawCircle(controls.jumpButtonX(), controls.jumpButtonY(), controls.jumpButtonR(), ui);
         ui.setColor(0xFFFFFFFF);
-        ui.setTextSize(30);
+        ui.setTextSize(28 * (density > 0 ? density : 1));
         ui.setTextAlign(Paint.Align.CENTER);
-        c.drawText("JUMP", controls.jumpButtonX(), controls.jumpButtonY() + 10, ui);
+        c.drawText("JUMP", controls.jumpButtonX(), controls.jumpButtonY() + 8, ui);
+    }
+
+    private void drawHud(Canvas c) {
+        ui.setStyle(Paint.Style.FILL);
+        ui.setTextAlign(Paint.Align.LEFT);
+        ui.setColor(0xFF33FF66);
+        float ts = 22 * (density > 0 ? density : 1);
+        ui.setTextSize(ts);
+        float y = ts + 6;
+        c.drawText(String.format("FPS %.0f", fps), 12, y, ui);
+        y += ts + 4;
+        c.drawText("cubes " + lastCubes + "  grid " + renderer.W + "x" + renderer.H, 12, y, ui);
+        y += ts + 4;
+        c.drawText(String.format("pos %.1f %.1f %.1f", cam.pos.x, cam.pos.y, cam.pos.z), 12, y, ui);
     }
 }

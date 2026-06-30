@@ -1,21 +1,16 @@
 package com.dot3d.app;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-
 /**
  * Infinite procedural cube world. Height at each (x,z) column is derived
- * deterministically from the seed via hashed value-noise. Cubes are stacked
- * solid from y=0 up to the column height. Chunks are generated lazily around
- * the player and only nearby visible chunks are emitted for rendering.
+ * deterministically from the seed via hashed value-noise. Only the topmost cube
+ * of each nearby column is rendered (a voxel-style surface), which keeps the
+ * triangle count low. Renders directly into the Renderer with no per-frame
+ * object allocation.
  */
 public final class World {
     public static final int CHUNK = 16;
     private long seed;
 
-    // biome colors by height band
     private static final int[] BIOME = new int[] {
             0x3F6FB0, // low: water-ish blue
             0xC2B280, // sand
@@ -24,11 +19,9 @@ public final class World {
             0xF5F5F5, // snow
     };
 
-    private final Map<Long, int[]> heightCache = new HashMap<>();
-
     public World(long seed) { this.seed = seed; }
 
-    public void setSeed(long s) { this.seed = s; heightCache.clear(); }
+    public void setSeed(long s) { this.seed = s; }
     public long getSeed() { return seed; }
 
     private static long hash(long x, long z, long seed) {
@@ -46,7 +39,6 @@ public final class World {
         return ((h >>> 11) & 0x1FFFFF) / (float) 0x1FFFFF;
     }
 
-    /** Smooth value noise via bilinear interpolation of lattice randoms. */
     private float noise(float fx, float fz) {
         int x0 = (int) Math.floor(fx);
         int z0 = (int) Math.floor(fz);
@@ -63,7 +55,6 @@ public final class World {
         return a + (b - a) * sz;
     }
 
-    /** Terrain height (top solid cube y) at world column (x,z). */
     public int heightAt(int x, int z) {
         float n = 0f;
         n += noise(x / 24f, z / 24f) * 1.0f;
@@ -80,27 +71,29 @@ public final class World {
         return BIOME[4];
     }
 
-    /**
-     * Emit triangles for the top cube of each column within renderDist chunks
-     * of the camera. Only the topmost cube per column is surfaced (its visible
-     * faces), which keeps triangle counts low for the software renderer.
-     */
-    public void emitNear(List<Tri> out, Vec3 camPos, int renderDistChunks, Mesh cubeMesh) {
+    /** Render the surface cubes within renderDistChunks of the camera. Returns cube count. */
+    public int emitNear(Renderer r, Vec3 camPos, int renderDistChunks) {
         int ccx = (int) Math.floor(camPos.x / CHUNK);
         int ccz = (int) Math.floor(camPos.z / CHUNK);
+        float maxD = (renderDistChunks * CHUNK) + CHUNK;
+        float maxD2 = maxD * maxD;
+        int count = 0;
         for (int cz = ccz - renderDistChunks; cz <= ccz + renderDistChunks; cz++) {
             for (int cx = ccx - renderDistChunks; cx <= ccx + renderDistChunks; cx++) {
                 int bx = cx * CHUNK, bz = cz * CHUNK;
                 for (int lz = 0; lz < CHUNK; lz++) {
                     for (int lx = 0; lx < CHUNK; lx++) {
                         int wx = bx + lx, wz = bz + lz;
+                        float dxh = (wx + 0.5f) - camPos.x;
+                        float dzh = (wz + 0.5f) - camPos.z;
+                        if (dxh * dxh + dzh * dzh > maxD2) continue;
                         int h = heightAt(wx, wz);
-                        int color = colorForHeight(h);
-                        Vec3 center = new Vec3(wx + 0.5f, h - 0.5f, wz + 0.5f);
-                        cubeMesh.emit(out, center, 1.0f, color);
+                        r.renderCube(wx + 0.5f, h - 0.5f, wz + 0.5f, colorForHeight(h));
+                        count++;
                     }
                 }
             }
         }
+        return count;
     }
 }

@@ -12,8 +12,8 @@ public final class Settings {
         sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
-    public int gridW() { return sp.getInt("gridW", 120); }
-    public int gridH() { return sp.getInt("gridH", 60); }
+    public int gridW() { return sp.getInt("gridW", 110); }
+    public int gridH() { return sp.getInt("gridH", 55); }
     public void setGrid(int w, int h) { sp.edit().putInt("gridW", w).putInt("gridH", h).apply(); }
 
     public String palette() { return sp.getString("palette", Palette.CLASSIC); }
@@ -25,7 +25,7 @@ public final class Settings {
     public long seed() { return sp.getLong("seed", 1337L); }
     public void setSeed(long s) { sp.edit().putLong("seed", s).apply(); }
 
-    public float sensitivity() { return sp.getFloat("sens", 0.005f); }
+    public float sensitivity() { return sp.getFloat("sens", 0.004f); }
     public void setSensitivity(float s) { sp.edit().putFloat("sens", s).apply(); }
 
     public float fov() { return sp.getFloat("fov", 70f); }
@@ -33,4 +33,7 @@ public final class Settings {
 
     public int renderDist() { return sp.getInt("rdist", 1); }
     public void setRenderDist(int d) { sp.edit().putInt("rdist", d).apply(); }
+
+    public boolean debug() { return sp.getBoolean("debug", true); }
+    public void setDebug(boolean d) { sp.edit().putBoolean("debug", d).apply(); }
 }

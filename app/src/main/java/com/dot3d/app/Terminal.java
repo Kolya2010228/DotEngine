@@ -2,8 +2,8 @@ package com.dot3d.app;
 
 /**
  * Command processor for the terminal. Real commands control engine settings and
- * launch; anything else returns a plausible stub (like a shell "command not found"
- * or fake output) without doing anything.
+ * launch; anything else returns a plausible stub (like a shell "command not found")
+ * without doing anything.
  */
 public final class Terminal {
     public interface Host {
@@ -31,6 +31,7 @@ public final class Terminal {
                         + "  palette <name|chars>  classic|blocks|dense or custom ramp (saved)\n"
                         + "  seed <n>           set infinite world seed (saved)\n"
                         + "  set color on|off   toggle color (saved)\n"
+                        + "  set debug on|off   toggle on-screen FPS/debug HUD (saved)\n"
                         + "  load [file]        load .obj model (no arg = file picker)\n"
                         + "  ls                 list bundled models\n"
                         + "  clear              clear screen\n"
@@ -72,7 +73,11 @@ public final class Terminal {
                     boolean on = tok[2].equalsIgnoreCase("on");
                     s.setColor(on);
                     host.print("color " + (on ? "on" : "off") + " (saved)");
-                } else host.print("usage: set color on|off");
+                } else if (tok.length >= 3 && tok[1].equalsIgnoreCase("debug")) {
+                    boolean on = tok[2].equalsIgnoreCase("on");
+                    s.setDebug(on);
+                    host.print("debug " + (on ? "on" : "off") + " (saved)");
+                } else host.print("usage: set color|debug on|off");
                 break;
             case "load":
                 host.loadModel(tok.length >= 2 ? tok[1] : null);
@@ -81,11 +86,9 @@ public final class Terminal {
                 host.listModels();
                 break;
             case "clear":
-                // handled by host via print sentinel
                 host.print("\u0001CLEAR");
                 break;
-            // plausible stubs for "fake" commands
-            case " pwd": case "pwd":
+            case "pwd":
                 host.print("/home/dot3d");
                 break;
             case "whoami":
@@ -95,7 +98,7 @@ public final class Terminal {
                 host.print(line.length() > 5 ? line.substring(5) : "");
                 break;
             case "cd":
-                break; // silently succeed
+                break;
             default:
                 host.print(cmd + ": command not found");
         }
