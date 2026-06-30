@@ -63,7 +63,7 @@ public final class World {
         return (int) (n * 12) + 1; // 1..13
     }
 
-    private int colorForHeight(int h) {
+    public int colorForHeight(int h) {
         if (h <= 2) return BIOME[0];
         if (h <= 4) return BIOME[1];
         if (h <= 8) return BIOME[2];
@@ -71,35 +71,14 @@ public final class World {
         return BIOME[4];
     }
 
-    /** Render the surface columns within renderDistChunks of the camera. Returns column count. */
+    /**
+     * Render the infinite world via per-cell heightfield raymarching. The
+     * render distance (in chunks) maps to a max ray distance. Returns the
+     * number of cells that hit terrain.
+     */
     public int emitNear(Renderer r, Vec3 camPos, int renderDistChunks) {
-        int ccx = (int) Math.floor(camPos.x / CHUNK);
-        int ccz = (int) Math.floor(camPos.z / CHUNK);
-        float maxD = (renderDistChunks * CHUNK) + CHUNK;
-        float maxD2 = maxD * maxD;
-        int count = 0;
-        for (int cz = ccz - renderDistChunks; cz <= ccz + renderDistChunks; cz++) {
-            for (int cx = ccx - renderDistChunks; cx <= ccx + renderDistChunks; cx++) {
-                int bx = cx * CHUNK, bz = cz * CHUNK;
-                for (int lz = 0; lz < CHUNK; lz++) {
-                    for (int lx = 0; lx < CHUNK; lx++) {
-                        int wx = bx + lx, wz = bz + lz;
-                        float dxh = (wx + 0.5f) - camPos.x;
-                        float dzh = (wz + 0.5f) - camPos.z;
-                        if (dxh * dxh + dzh * dzh > maxD2) continue;
-                        int h = heightAt(wx, wz);
-                        // We only need walls if the column is taller than its neighbor.
-                        // For a simple surface, we can approximate or only check if the neighbor is lower.
-                        int hE = heightAt(wx + 1, wz);
-                        int hW = heightAt(wx - 1, wz);
-                        int hS = heightAt(wx, wz + 1);
-                        int hN = heightAt(wx, wz - 1);
-                        r.renderColumn(wx, wz, h, hE, hW, hS, hN, colorForHeight(h));
-                        count++;
-                    }
-                }
-            }
-        }
-        return count;
+        float maxDist = renderDistChunks * CHUNK + CHUNK;
+        if (maxDist < 32f) maxDist = 32f;
+        return r.raymarchTerrain(this, maxDist);
     }
 }
