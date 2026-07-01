@@ -83,7 +83,7 @@ public final class GLEngineView extends GLSurfaceView implements Engine {
             GLES30.glAttachShader(program, fs);
             GLES30.glLinkProgram(program);
             int[] ok = new int[1];
-            GLES30.glGetProgramiv(program, GLES30.GL_LINK_STATUS, ok);
+            GLES30.glGetProgramiv(program, GLES30.GL_LINK_STATUS, ok, 0);
             if (ok[0] == 0) {
                 String log = GLES30.glGetProgramInfoLog(program);
                 throw new RuntimeException("program link failed: " + log);
@@ -113,7 +113,7 @@ public final class GLEngineView extends GLSurfaceView implements Engine {
             GLES30.glShaderSource(s, src);
             GLES30.glCompileShader(s);
             int[] ok = new int[1];
-            GLES30.glGetShaderiv(s, GLES30.GL_COMPILE_STATUS, ok);
+            GLES30.glGetShaderiv(s, GLES30.GL_COMPILE_STATUS, ok, 0);
             if (ok[0] == 0) {
                 String log = GLES30.glGetShaderInfoLog(s);
                 GLES30.glDeleteShader(s);
