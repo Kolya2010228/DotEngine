@@ -34,6 +34,9 @@ public final class Settings {
     public int renderDist() { return sp.getInt("rdist", 1); }
     public void setRenderDist(int d) { sp.edit().putInt("rdist", d).apply(); }
 
+    public boolean gpu() { return sp.getBoolean("gpu", false); }
+    public void setGpu(boolean g) { sp.edit().putBoolean("gpu", g).apply(); }
+
     public boolean debug() { return sp.getBoolean("debug", true); }
     public void setDebug(boolean d) { sp.edit().putBoolean("debug", d).apply(); }
 }

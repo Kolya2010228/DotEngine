@@ -32,6 +32,7 @@ public final class Terminal {
                         + "  seed <n>           set infinite world seed (saved)\n"
                         + "  set color on|off   toggle color (saved)\n"
                         + "  set debug on|off   toggle on-screen FPS/debug HUD (saved)\n"
+                        + "  set gpu on|off     experimental GPU render backend (saved)\n"
                         + "  load [file]        load .obj model (no arg = file picker)\n"
                         + "  ls                 list bundled models\n"
                         + "  clear              clear screen\n"
@@ -77,7 +78,11 @@ public final class Terminal {
                     boolean on = tok[2].equalsIgnoreCase("on");
                     s.setDebug(on);
                     host.print("debug " + (on ? "on" : "off") + " (saved)");
-                } else host.print("usage: set color|debug on|off");
+                } else if (tok.length >= 3 && tok[1].equalsIgnoreCase("gpu")) {
+                    boolean on = tok[2].equalsIgnoreCase("on");
+                    s.setGpu(on);
+                    host.print("gpu " + (on ? "on" : "off") + " (saved). relaunch engine ('run') to apply");
+                } else host.print("usage: set color|debug|gpu on|off");
                 break;
             case "load":
                 host.loadModel(tok.length >= 2 ? tok[1] : null);

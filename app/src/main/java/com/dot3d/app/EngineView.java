@@ -16,7 +16,7 @@ import java.util.List;
  * infinite cube world (+ optional loaded model) via the software renderer and
  * blits ASCII through AsciiView. Handles movement, gravity, look and jump.
  */
-public final class EngineView extends SurfaceView implements SurfaceHolder.Callback, Runnable {
+public final class EngineView extends SurfaceView implements SurfaceHolder.Callback, Runnable, Engine {
     private Thread thread;
     private volatile boolean running = false;
     private volatile boolean paused = false;
