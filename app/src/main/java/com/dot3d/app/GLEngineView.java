@@ -123,7 +123,7 @@ public final class GLEngineView extends FrameLayout implements Engine {
         vy += GRAV * dt;
         cam.pos.y += vy * dt;
         int gx = (int) Math.floor(cam.pos.x), gz = (int) Math.floor(cam.pos.z);
-        float groundTop = GpuField.heightAt(gx, gz, (int) seed);
+        float groundTop = GpuField.heightAt(gx, gz, (int) settings.seed());
         if (cam.pos.y - EYE <= groundTop) { cam.pos.y = groundTop + EYE; vy = 0f; onGround = true; }
         else onGround = false;
     }
@@ -284,6 +284,21 @@ public final class GLEngineView extends FrameLayout implements Engine {
             cam.fovDeg = settings.fov();
             update(sdt);
 
+            // Grid size can change live via the pause menu, but cellTex/FBO were
+            // sized once in onSurfaceCreated. Re-specify the cell texture storage
+            // when the grid changes so pass A (render target) and pass B (texelFetch)
+            // agree on the size; otherwise pass B reads a mismatched-size buffer and
+            // the render is garbled. The FBO attachment references cellTex by object,
+            // so re-defining level 0 keeps the attachment valid.
+            int gw = Math.max(2, settings.gridW());
+            int gh = Math.max(2, settings.gridH());
+            if (gw != gridW || gh != gridH) {
+                gridW = gw; gridH = gh;
+                GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, cellTex);
+                GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA8, gridW, gridH, 0,
+                        GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null);
+            }
+
             Vec3 f = cam.forward();
             float rlen = (float) Math.sqrt(f.z * f.z + f.x * f.x); if (rlen < 1e-5f) rlen = 1e-5f;
             float rx = f.z / rlen, ry = 0f, rz = -f.x / rlen;
@@ -304,7 +319,7 @@ public final class GLEngineView extends FrameLayout implements Engine {
             GLES30.glUniform1f(uTanHalf, tanHalf);
             GLES30.glUniform1f(uAspect, cellAspect);
             GLES30.glUniform1f(uMaxDist, maxDist);
-            GLES30.glUniform1ui(uSeed, (int) seed);
+            GLES30.glUniform1ui(uSeed, (int) settings.seed());
             GLES30.glUniform2f(uResA, (float) gridW, (float) gridH);
             GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3);
 
