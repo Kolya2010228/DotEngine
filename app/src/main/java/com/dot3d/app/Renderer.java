@@ -51,10 +51,15 @@ public final class Renderer {
         fx = f.x; fy = f.y; fz = f.z;
         float rlen = (float) Math.sqrt(fz * fz + fx * fx);
         if (rlen < 1e-5f) rlen = 1e-5f;
-        rx = -fz / rlen; ry = 0; rz = fx / rlen;
-        ux = ry * fz - rz * fy;
-        uy = rz * fx - rx * fz;
-        uz = rx * fy - ry * fx;
+        // Screen-right must match the camera's right used by controls/physics
+        // (Camera.right() = up x forwardFlat = (fz, 0, -fx)); using the opposite
+        // here rendered the whole scene horizontally mirrored, which also made
+        // look-drag and strafe feel inverted left/right.
+        rx = fz / rlen; ry = 0; rz = -fx / rlen;
+        // up = forward x right, so up keeps pointing upward with the corrected right.
+        ux = fy * rz - fz * ry;
+        uy = fz * rx - fx * rz;
+        uz = fx * ry - fy * rx;
         tanHalf = (float) Math.tan(Math.toRadians(cam.fovDeg) / 2.0);
     }
 
