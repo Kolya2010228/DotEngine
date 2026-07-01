@@ -1,6 +1,10 @@
 package com.dot3d.app;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 /**
  * Software 3D renderer into a W x H character framebuffer with a per-cell depth
@@ -18,6 +22,14 @@ public final class Renderer {
     public float[] glyphLum;   // luminance per cell [0,1]
     public int[] color;        // 0xRRGGBB per cell, -1 = sky
     public float aspect = 1f;
+
+    // Raymarch is split across CPU cores; a small shared daemon pool.
+    private static final int NCORES = Math.max(1, Runtime.getRuntime().availableProcessors());
+    private static final ExecutorService POOL = Executors.newFixedThreadPool(NCORES, r -> {
+        Thread t = new Thread(r, "dot3d-raymarch");
+        t.setDaemon(true);
+        return t;
+    });
 
     // Light direction (normalized, pointing down-ish).
     private static final float LX = -0.3578f, LY = -0.8944f, LZ = -0.2683f;
@@ -68,7 +80,35 @@ public final class Renderer {
      * Fills glyphLum/color/depth for every cell the ray hits (sky cells stay
      * color=-1). Returns the number of cells that hit terrain.
      */
+    // Screen rows are independent, so the raymarch (the renderer's dominant
+    // compute cost) is split across CPU cores. Each worker owns its own column
+    // cache; camera-basis fields are written in beginFrame BEFORE dispatch and
+    // only read by workers, so there is no shared mutable state. The result is
+    // pixel-identical to the serial version.
     public int raymarchTerrain(World w, float maxDist) {
+        int bands = NCORES;
+        if (bands <= 1 || H < 2 * bands) {
+            return raymarchRows(w, maxDist, 0, H);
+        }
+        List<Future<Integer>> futures = new ArrayList<>(bands);
+        int rowsPer = (H + bands - 1) / bands;
+        for (int b = 0; b < bands; b++) {
+            final int y0 = b * rowsPer;
+            final int y1 = Math.min(H, y0 + rowsPer);
+            if (y0 >= y1) break;
+            futures.add(POOL.submit(() -> raymarchRows(w, maxDist, y0, y1)));
+        }
+        int hits = 0;
+        try {
+            for (Future<Integer> f : futures) hits += f.get();
+        } catch (Exception e) {
+            Thread.currentThread().interrupt();
+        }
+        return hits;
+    }
+
+    /** Raymarch rows [y0, y1) of the framebuffer. Cells are independent. */
+    private int raymarchRows(World w, float maxDist, int y0, int y1) {
         int hits = 0;
         // 1-entry column-height cache. Consecutive raymarch steps almost always
         // stay in the same (ix,iz) column, yet World.heightAt() recomputes value
@@ -76,7 +116,7 @@ public final class Renderer {
         // the last column is exact and removes most of the per-step noise work in
         // this hot loop (the dominant cost of the software renderer).
         int cacheIx = Integer.MIN_VALUE, cacheIz = Integer.MIN_VALUE, cacheH = 0;
-        for (int sy = 0; sy < H; sy++) {
+        for (int sy = y0; sy < y1; sy++) {
             float ndcY = 1f - 2f * (sy + 0.5f) / H;
             float ay = ndcY * tanHalf;
             int rowBase = sy * W;
