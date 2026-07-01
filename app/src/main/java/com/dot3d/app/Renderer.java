@@ -70,6 +70,12 @@ public final class Renderer {
      */
     public int raymarchTerrain(World w, float maxDist) {
         int hits = 0;
+        // 1-entry column-height cache. Consecutive raymarch steps almost always
+        // stay in the same (ix,iz) column, yet World.heightAt() recomputes value
+        // noise (~8 hash ops) on every call. heightAt is deterministic, so caching
+        // the last column is exact and removes most of the per-step noise work in
+        // this hot loop (the dominant cost of the software renderer).
+        int cacheIx = Integer.MIN_VALUE, cacheIz = Integer.MIN_VALUE, cacheH = 0;
         for (int sy = 0; sy < H; sy++) {
             float ndcY = 1f - 2f * (sy + 0.5f) / H;
             float ay = ndcY * tanHalf;
@@ -94,7 +100,11 @@ public final class Renderer {
                     pz = camz + dz * t;
                     ix = (int) Math.floor(px);
                     iz = (int) Math.floor(pz);
-                    hcol = w.heightAt(ix, iz);
+                    if (ix != cacheIx || iz != cacheIz) {
+                        cacheH = w.heightAt(ix, iz);
+                        cacheIx = ix; cacheIz = iz;
+                    }
+                    hcol = cacheH;
                     if (py < hcol) { hit = true; break; }
                     t += 0.12f + t * 0.02f; // adaptive step: cheap far away
                 }

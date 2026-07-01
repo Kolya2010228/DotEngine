@@ -103,14 +103,29 @@ public final class EngineView extends SurfaceView implements SurfaceHolder.Callb
     @Override public void run() {
         cam.pos = new Vec3(0.5f, world.heightAt(0, 0) + physics.eyeHeight + 2, 0.5f);
         long last = System.nanoTime();
+        boolean fpsInit = false;
         while (running) {
             long now = System.nanoTime();
-            float dt = (now - last) / 1e9f;
-            if (dt > 0.05f) dt = 0.05f;
+            float rawDt = (now - last) / 1e9f; // real frame time (used for FPS)
             last = now;
-            if (dt > 0) fps += ((1f / dt) - fps) * 0.1f;
+
+            // Clamp ONLY the simulation step, so a slow/long frame doesn't make
+            // physics teleport. The FPS readout must NOT use this clamped value.
+            float dt = rawDt;
+            if (dt > 0.05f) dt = 0.05f;
 
             if (!paused) {
+                // FPS from the REAL frame time. Skip the first frame and absurdly
+                // tiny deltas (< 0.1 ms): otherwise 1/rawDt on the very first frame
+                // is in the hundreds-of-millions and the EMA shows "billions" for a
+                // long time. Using rawDt (not the 0.05 s clamp) also lets the HUD
+                // actually display low frame rates like 3 FPS instead of bottoming
+                // out at 20.
+                if (rawDt > 1e-4f) {
+                    float inst = 1f / rawDt;
+                    if (!fpsInit) { fps = inst; fpsInit = true; }
+                    else fps += (inst - fps) * 0.1f;
+                }
                 update(dt);
                 drawFrame();
             } else {
