@@ -71,6 +71,7 @@ public final class AsciiView {
                 float lum = r.glyphLum[idx];
                 char glyph = palette.glyph(lum);
                 if (glyph == ' ') continue;
+                if (glyph < FIRST || glyph > LAST) continue; // custom palette glyph outside the ASCII atlas
                 int tint;
                 if (color) {
                     float l = 0.4f + 0.6f * lum;
