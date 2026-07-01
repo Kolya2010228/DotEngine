@@ -374,6 +374,17 @@ public final class GLEngineView extends FrameLayout implements Engine {
         // true so it receives the full gesture. The GLSurfaceView below only renders.
         @Override public boolean onTouchEvent(MotionEvent e) { controls.onTouch(e); return true; }
 
+        @Override protected void onSizeChanged(int w, int h, int ow, int oh) {
+            super.onSizeChanged(w, h, ow, oh);
+            // CRITICAL: without this, Controls.screenW/screenH stay 0, so the
+            // left-half joystick test (x < screenW/2) is never true and the jump
+            // button position collapses to negative coords -> joystick never
+            // activates and the button is drawn/hit off-screen. This is exactly why
+            // the GPU path showed no joystick or jump button. The software EngineView
+            // calls setSize in surfaceChanged; the FrameLayout rewrite dropped it.
+            controls.setSize(w, h);
+        }
+
         @Override protected void onDraw(Canvas c) {
             if (controls.joyActive) {
                 ui.setStyle(Paint.Style.STROKE);

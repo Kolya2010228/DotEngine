@@ -5,67 +5,110 @@ import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
+import android.widget.Toast;
 
 /**
  * Overlay pause menu shown when Back is pressed during the engine. Tunes the
  * current session live (grid, palette/color, sensitivity, fov, render distance,
- * seed) via the shared Settings, and offers Continue / Exit to terminal.
+ * seed) via the shared Settings.
+ *
+ * Layout: a fixed title, a scrollable body of fields (so nothing is clipped on a
+ * short landscape screen), and a pinned bottom button row. Sliders show their live
+ * value in the label. "Apply settings" commits the fields and confirms with a toast
+ * without leaving the menu; Continue / Exit also commit before acting.
  */
 public final class PauseMenu extends LinearLayout {
     public interface Listener { void onContinue(); void onExitToTerminal(); }
 
+    private interface Fmt { String f(int v); }
+
     public PauseMenu(Context ctx, final Settings s, final Listener l) {
         super(ctx);
         setOrientation(VERTICAL);
-        setBackgroundColor(0xCC000000);
-        int pad = (int) (24 * getResources().getDisplayMetrics().density);
+        setBackgroundColor(0xEE000000);
+        final float d = getResources().getDisplayMetrics().density;
+        int pad = (int) (20 * d);
         setPadding(pad, pad, pad, pad);
 
         addView(title("PAUSED"));
 
+        // scrollable body so long content is never cut off on landscape
+        ScrollView scroll = new ScrollView(ctx);
+        scroll.setLayoutParams(new LinearLayout.LayoutParams(
+                LayoutParams.MATCH_PARENT, 0, 1f));
+        LinearLayout body = new LinearLayout(ctx);
+        body.setOrientation(VERTICAL);
+        scroll.addView(body);
+        addView(scroll);
+
         // grid
+        body.addView(label("Grid size (chars)"));
         final EditText gw = number("Grid width", s.gridW());
         final EditText gh = number("Grid height", s.gridH());
-        addView(label("Grid size (chars)"));
-        addView(gw); addView(gh);
+        body.addView(gw); body.addView(gh);
 
         // palette
+        body.addView(label("Palette"));
         final EditText pal = text("Palette ramp / name", s.palette());
-        addView(label("Palette"));
-        addView(pal);
+        body.addView(pal);
 
         // color
         final CheckBox color = new CheckBox(ctx);
         color.setText("Color");
         color.setTextColor(0xFFFFFFFF);
         color.setChecked(s.color());
-        addView(color);
+        body.addView(color);
 
         // seed
+        body.addView(label("Seed"));
         final EditText seed = new EditText(ctx);
         seed.setInputType(android.text.InputType.TYPE_CLASS_NUMBER | android.text.InputType.TYPE_NUMBER_FLAG_SIGNED);
         seed.setHint("World seed");
         seed.setText(String.valueOf(s.seed()));
         seed.setTextColor(0xFFFFFFFF);
-        addView(label("Seed"));
-        addView(seed);
+        body.addView(seed);
 
-        // sensitivity
-        addView(label("Look sensitivity"));
+        // sensitivity (live value)
+        final TextView sensLbl = label("Look sensitivity");
+        body.addView(sensLbl);
         final SeekBar sens = seek((int) (s.sensitivity() * 2000), 100);
-        addView(sens);
+        bindLabel(sens, sensLbl, "Look sensitivity", new Fmt() {
+            public String f(int v) { return String.format("%.4f", Math.max(1, v) / 2000f); }
+        });
+        body.addView(sens);
 
-        // fov
-        addView(label("FOV"));
+        // fov (live value)
+        final TextView fovLbl = label("FOV");
+        body.addView(fovLbl);
         final SeekBar fov = seek((int) s.fov(), 120);
-        addView(fov);
+        bindLabel(fov, fovLbl, "FOV", new Fmt() {
+            public String f(int v) { return String.valueOf(Math.max(40, v)); }
+        });
+        body.addView(fov);
 
-        // render distance
-        addView(label("Render distance (chunks)"));
+        // render distance (live value)
+        final TextView rdLbl = label("Render distance (chunks)");
+        body.addView(rdLbl);
         final SeekBar rd = seek(s.renderDist(), 4);
-        addView(rd);
+        bindLabel(rd, rdLbl, "Render distance (chunks)", new Fmt() {
+            public String f(int v) { return String.valueOf(Math.max(1, v)); }
+        });
+        body.addView(rd);
+
+        // pinned bottom button row
+        LinearLayout row = new LinearLayout(ctx);
+        row.setOrientation(HORIZONTAL);
+        int gap = (int) (6 * d);
+
+        Button apply = new Button(ctx);
+        apply.setText("Apply settings");
+        apply.setOnClickListener(v -> {
+            apply(s, gw, gh, pal, color, seed, sens, fov, rd);
+            Toast.makeText(getContext(), "Settings applied \u2713", Toast.LENGTH_SHORT).show();
+        });
 
         Button cont = new Button(ctx);
         cont.setText("Continue");
@@ -73,15 +116,33 @@ public final class PauseMenu extends LinearLayout {
             apply(s, gw, gh, pal, color, seed, sens, fov, rd);
             l.onContinue();
         });
-        addView(cont);
 
         Button exit = new Button(ctx);
-        exit.setText("Exit to terminal");
+        exit.setText("Exit");
         exit.setOnClickListener(v -> {
             apply(s, gw, gh, pal, color, seed, sens, fov, rd);
             l.onExitToTerminal();
         });
-        addView(exit);
+
+        row.addView(apply, btnLp(gap));
+        row.addView(cont, btnLp(gap));
+        row.addView(exit, btnLp(gap));
+        addView(row);
+    }
+
+    private LinearLayout.LayoutParams btnLp(int gap) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f);
+        lp.setMargins(gap, gap, gap, 0);
+        return lp;
+    }
+
+    private void bindLabel(final SeekBar sb, final TextView tv, final String base, final Fmt fmt) {
+        tv.setText(base + ": " + fmt.f(sb.getProgress()));
+        sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            public void onProgressChanged(SeekBar s, int p, boolean fromUser) { tv.setText(base + ": " + fmt.f(p)); }
+            public void onStartTrackingTouch(SeekBar s) {}
+            public void onStopTrackingTouch(SeekBar s) {}
+        });
     }
 
     private void apply(Settings s, EditText gw, EditText gh, EditText pal, CheckBox color,
