@@ -115,7 +115,6 @@ public final class Renderer {
         // noise (~8 hash ops) on every call. heightAt is deterministic, so caching
         // the last column is exact and removes most of the per-step noise work in
         // this hot loop (the dominant cost of the software renderer).
-        int cacheIx = Integer.MIN_VALUE, cacheIz = Integer.MIN_VALUE, cacheH = 0;
         for (int sy = y0; sy < y1; sy++) {
             float ndcY = 1f - 2f * (sy + 0.5f) / H;
             float ay = ndcY * tanHalf;
@@ -130,23 +129,56 @@ public final class Renderer {
                 if (dl < 1e-6f) dl = 1e-6f;
                 dx /= dl; dy /= dl; dz /= dl;
 
+                // 2D DDA over integer columns (Amanatides-Woo). The terrain is a
+                // heightfield of integer columns, so the sampled column can only
+                // change at cell boundaries -- we step the ray boundary-to-boundary
+                // (one World.heightAt per column) instead of by hundreds of tiny
+                // fixed steps. Exact for a blocky heightfield: a taller column is a
+                // vertical wall (hit when we enter it below its top), a descending
+                // ray hits the flat top where y crosses the column height.
+                int ix = (int) Math.floor(camx);
+                int iz = (int) Math.floor(camz);
+                int stepX = dx > 0 ? 1 : -1;
+                int stepZ = dz > 0 ? 1 : -1;
+                float tMaxX, tDeltaX, tMaxZ, tDeltaZ;
+                if (dx > 1e-9f || dx < -1e-9f) {
+                    float nextX = dx > 0 ? (ix + 1) : ix;
+                    tMaxX = (nextX - camx) / dx;
+                    tDeltaX = Math.abs(1f / dx);
+                } else { tMaxX = Float.POSITIVE_INFINITY; tDeltaX = Float.POSITIVE_INFINITY; }
+                if (dz > 1e-9f || dz < -1e-9f) {
+                    float nextZ = dz > 0 ? (iz + 1) : iz;
+                    tMaxZ = (nextZ - camz) / dz;
+                    tDeltaZ = Math.abs(1f / dz);
+                } else { tMaxZ = Float.POSITIVE_INFINITY; tDeltaZ = Float.POSITIVE_INFINITY; }
+
                 float t = 0f;
                 boolean hit = false;
                 float px = 0, py = 0, pz = 0;
-                int ix = 0, iz = 0, hcol = 0;
+                int hcol = 0;
                 while (t < maxDist) {
-                    px = camx + dx * t;
-                    py = camy + dy * t;
-                    pz = camz + dz * t;
-                    ix = (int) Math.floor(px);
-                    iz = (int) Math.floor(pz);
-                    if (ix != cacheIx || iz != cacheIz) {
-                        cacheH = w.heightAt(ix, iz);
-                        cacheIx = ix; cacheIz = iz;
+                    int h = w.heightAt(ix, iz);
+                    float tExit = tMaxX < tMaxZ ? tMaxX : tMaxZ;
+                    float tEnd = tExit < maxDist ? tExit : maxDist;
+                    float pyEnter = camy + dy * t;
+                    if (pyEnter < h) {
+                        // entered this column below its surface -> vertical-face hit
+                        hcol = h; hit = true;
+                        px = camx + dx * t; py = pyEnter; pz = camz + dz * t;
+                        break;
                     }
-                    hcol = cacheH;
-                    if (py < hcol) { hit = true; break; }
-                    t += 0.12f + t * 0.02f; // adaptive step: cheap far away
+                    if (dy < 0f) {
+                        float tc = (h - camy) / dy; // ray descends to y = h here
+                        if (tc >= t && tc <= tEnd) {
+                            hcol = h; hit = true; t = tc;
+                            px = camx + dx * t; py = camy + dy * t; pz = camz + dz * t;
+                            break;
+                        }
+                    }
+                    t = tExit;
+                    if (t >= maxDist) break;
+                    if (tMaxX < tMaxZ) { ix += stepX; tMaxX += tDeltaX; }
+                    else { iz += stepZ; tMaxZ += tDeltaZ; }
                 }
                 int idx = rowBase + sx;
                 if (!hit) continue; // sky
