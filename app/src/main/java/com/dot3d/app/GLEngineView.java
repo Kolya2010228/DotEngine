@@ -16,6 +16,10 @@ import android.widget.FrameLayout;
 import javax.microedition.khronos.egl.EGLConfig;
 import javax.microedition.khronos.opengles.GL10;
 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.FloatBuffer;
+
 /**
  * Experimental GPU render path -- ASCII glyph step.
  *
@@ -47,6 +51,11 @@ public final class GLEngineView extends FrameLayout implements Engine {
     private static final float WALK = 6f, GRAV = -22f, JUMP = 9f, EYE = 1.6f;
 
     private volatile float fps = 0f;
+
+    // loaded .obj model handed from the UI thread to the GL thread
+    private final Object modelLock = new Object();
+    private volatile float[] pendingModelData = null;
+    private volatile boolean modelDirty = false;
 
     // glyph atlas (built on the main thread, uploaded on the GL thread)
     private final String ramp;
@@ -97,7 +106,26 @@ public final class GLEngineView extends FrameLayout implements Engine {
     }
 
     @Override public void setMenuListener(EngineView.MenuListener l) { this.menuListener = l; }
-    @Override public void setLoadedModel(Mesh m) { /* .obj on GPU is a later step */ }
+    @Override public void setLoadedModel(Mesh m) {
+        // Emit the model to world space in front of the spawn, resting on the terrain,
+        // then hand the interleaved [pos, normal] triangles to the GL thread to upload
+        // as a VBO (see GLRenderer.maybeUploadModel). Previously this was a no-op, so a
+        // loaded .obj never appeared in GPU mode.
+        java.util.List<Tri> out = new java.util.ArrayList<>();
+        int mx = 0, mz = 8;
+        float ground = GpuField.heightAt(mx, mz, (int) settings.seed());
+        m.emit(out, new Vec3(mx + 0.5f, ground + 4f, mz + 0.5f), 6f, 0xE0A030);
+        float[] data = new float[out.size() * 3 * 6];
+        int p = 0;
+        for (Tri t : out) {
+            Vec3[] vs = new Vec3[]{ t.a, t.b, t.c };
+            for (Vec3 v : vs) {
+                data[p++] = v.x; data[p++] = v.y; data[p++] = v.z;
+                data[p++] = t.normal.x; data[p++] = t.normal.y; data[p++] = t.normal.z;
+            }
+        }
+        synchronized (modelLock) { pendingModelData = data; modelDirty = true; }
+    }
     @Override public void setPaused(boolean p) { if (p) glView.onPause(); else glView.onResume(); }
 
     /** Inner GLSurfaceView; forwards touches to the shared Controls. */
@@ -123,7 +151,7 @@ public final class GLEngineView extends FrameLayout implements Engine {
         vy += GRAV * dt;
         cam.pos.y += vy * dt;
         int gx = (int) Math.floor(cam.pos.x), gz = (int) Math.floor(cam.pos.z);
-        float groundTop = GpuField.heightAt(gx, gz, (int) seed);
+        float groundTop = GpuField.heightAt(gx, gz, (int) settings.seed());
         if (cam.pos.y - EYE <= groundTop) { cam.pos.y = groundTop + EYE; vy = 0f; onGround = true; }
         else onGround = false;
     }
@@ -171,13 +199,15 @@ public final class GLEngineView extends FrameLayout implements Engine {
             "    t=tExit; if(t>=uMaxDist) break;\n" +
             "    if(tMaxX<tMaxZ){ ix+=stepX; tMaxX+=tDeltaX; } else { iz+=stepZ; tMaxZ+=tDeltaZ; }\n" +
             "  }\n" +
-            "  if(!hit){ fragColor=vec4(0.0,0.0,0.0,0.0); return; }\n" +
+            "  if(!hit){ fragColor=vec4(0.0,0.0,0.0,0.0); gl_FragDepth=1.0; return; }\n" +
             "  float hl=heightF(ix-1,iz,uSeed); float hr=heightF(ix+1,iz,uSeed); float hd=heightF(ix,iz-1,uSeed); float hu=heightF(ix,iz+1,uSeed);\n" +
             "  vec3 nrm = normalize(vec3(hl-hr, 2.0, hd-hu));\n" +
             "  vec3 L = vec3(-0.3578,-0.8944,-0.2683);\n" +
             "  float diff = max(0.0, -dot(nrm,L)); float fog = clamp(1.0 - t/uMaxDist, 0.0, 1.0);\n" +
             "  float lum = (0.25+0.75*diff)*(0.4+0.6*fog);\n" +
             "  fragColor = vec4(biome(hcol), lum);\n" +
+            "  float cz = t * dot(dir, uForward);\n" +
+            "  gl_FragDepth = clamp(cz/uMaxDist, 0.0, 1.0);\n" +
             "}\n";
 
     // Pass B: read cell texture, pick a glyph from the atlas by luminance, tint it.
@@ -206,16 +236,54 @@ public final class GLEngineView extends FrameLayout implements Engine {
             "  fragColor = vec4(tint*cov, 1.0);\n" +
             "}\n";
 
+    // Model pass: project .obj triangles with the SAME pinhole camera as the
+    // terrain raymarch and write linear camera-forward depth so GL depth-testing
+    // composites the model against the terrain correctly.
+    private static final String VS_MODEL =
+            "#version 300 es\n" +
+            "precision highp float;\n" +
+            "in vec3 aPos; in vec3 aNormal;\n" +
+            "uniform vec3 uCamPos; uniform vec3 uForward; uniform vec3 uRight; uniform vec3 uUp;\n" +
+            "uniform float uTanHalf; uniform float uAspect;\n" +
+            "out vec3 vNormal; out float vCz;\n" +
+            "void main(){\n" +
+            "  vec3 rel = aPos - uCamPos;\n" +
+            "  float cx = dot(rel, uRight); float cy = dot(rel, uUp); float cz = dot(rel, uForward);\n" +
+            "  vNormal = aNormal; vCz = cz;\n" +
+            "  gl_Position = vec4(cx/(uTanHalf*uAspect), cy/uTanHalf, 0.0, cz);\n" +
+            "}\n";
+
+    private static final String FS_MODEL =
+            "#version 300 es\n" +
+            "precision highp float;\n" +
+            "in vec3 vNormal; in float vCz;\n" +
+            "uniform vec3 uModelColor; uniform float uMaxDist; uniform int uColorM;\n" +
+            "out vec4 fragColor;\n" +
+            "void main(){\n" +
+            "  vec3 L = vec3(-0.3578,-0.8944,-0.2683);\n" +
+            "  vec3 n = normalize(vNormal);\n" +
+            "  float d = max(0.0, -dot(n, L));\n" +
+            "  float lum = 0.25 + 0.75*d;\n" +
+            "  vec3 col = (uColorM==1) ? uModelColor : vec3(1.0);\n" +
+            "  fragColor = vec4(col, lum);\n" +
+            "  gl_FragDepth = clamp(vCz/uMaxDist, 0.0, 1.0);\n" +
+            "}\n";
+
     private final class GLRenderer implements GLSurfaceView.Renderer {
         private int progA, progB;
         // pass A uniforms
         private int uCamPos, uForward, uRight, uUp, uTanHalf, uAspect, uMaxDist, uSeed, uResA;
         // pass B uniforms
         private int uCell, uAtlas, uResB, uGrid, uN, uColor;
-        private int fbo, cellTex, atlasTex;
+        private int fbo, cellTex, atlasTex, depthRb;
         private int gridW, gridH;
         private int screenW, screenH;
         private long last;
+
+        // model (.obj) GPU pass
+        private int progM;
+        private int mCamPos, mForward, mRight, mUp, mTanHalf, mAspect, mModelColor, mMaxDist, mColorM;
+        private int modelVao, modelVbo, modelVertCount;
 
         @Override public void onSurfaceCreated(GL10 gl, EGLConfig config) {
             progA = link(VS, FS_TERRAIN);
@@ -236,6 +304,17 @@ public final class GLEngineView extends FrameLayout implements Engine {
             uN = GLES30.glGetUniformLocation(progB, "uN");
             uColor = GLES30.glGetUniformLocation(progB, "uColor");
 
+            progM = link(VS_MODEL, FS_MODEL);
+            mCamPos = GLES30.glGetUniformLocation(progM, "uCamPos");
+            mForward = GLES30.glGetUniformLocation(progM, "uForward");
+            mRight = GLES30.glGetUniformLocation(progM, "uRight");
+            mUp = GLES30.glGetUniformLocation(progM, "uUp");
+            mTanHalf = GLES30.glGetUniformLocation(progM, "uTanHalf");
+            mAspect = GLES30.glGetUniformLocation(progM, "uAspect");
+            mModelColor = GLES30.glGetUniformLocation(progM, "uModelColor");
+            mMaxDist = GLES30.glGetUniformLocation(progM, "uMaxDist");
+            mColorM = GLES30.glGetUniformLocation(progM, "uColorM");
+
             gridW = Math.max(2, settings.gridW());
             gridH = Math.max(2, settings.gridH());
 
@@ -254,6 +333,12 @@ public final class GLEngineView extends FrameLayout implements Engine {
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo);
             GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0,
                     GLES30.GL_TEXTURE_2D, cellTex, 0);
+            // depth attachment so the .obj model pass can depth-test against terrain
+            GLES30.glGenRenderbuffers(1, tmp, 0); depthRb = tmp[0];
+            GLES30.glBindRenderbuffer(GLES30.GL_RENDERBUFFER, depthRb);
+            GLES30.glRenderbufferStorage(GLES30.GL_RENDERBUFFER, GLES30.GL_DEPTH_COMPONENT16, gridW, gridH);
+            GLES30.glFramebufferRenderbuffer(GLES30.GL_FRAMEBUFFER, GLES30.GL_DEPTH_ATTACHMENT,
+                    GLES30.GL_RENDERBUFFER, depthRb);
             int status = GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER);
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0);
             if (status != GLES30.GL_FRAMEBUFFER_COMPLETE)
@@ -267,6 +352,13 @@ public final class GLEngineView extends FrameLayout implements Engine {
             GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR);
             GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE);
             GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE);
+
+            // model VAO/VBO (populated lazily in maybeUploadModel when a model loads)
+            GLES30.glGenVertexArrays(1, tmp, 0); modelVao = tmp[0];
+            GLES30.glGenBuffers(1, tmp, 0); modelVbo = tmp[0];
+            modelVertCount = 0;
+            // re-upload after a GL context loss, or if a model was already handed over
+            synchronized (modelLock) { if (pendingModelData != null) modelDirty = true; }
 
             last = System.nanoTime();
         }
@@ -284,6 +376,23 @@ public final class GLEngineView extends FrameLayout implements Engine {
             cam.fovDeg = settings.fov();
             update(sdt);
 
+            // Grid size can change live via the pause menu, but cellTex/FBO were
+            // sized once in onSurfaceCreated. Re-specify the cell texture storage
+            // when the grid changes so pass A (render target) and pass B (texelFetch)
+            // agree on the size; otherwise pass B reads a mismatched-size buffer and
+            // the render is garbled. The FBO attachment references cellTex by object,
+            // so re-defining level 0 keeps the attachment valid.
+            int gw = Math.max(2, settings.gridW());
+            int gh = Math.max(2, settings.gridH());
+            if (gw != gridW || gh != gridH) {
+                gridW = gw; gridH = gh;
+                GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, cellTex);
+                GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA8, gridW, gridH, 0,
+                        GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null);
+                GLES30.glBindRenderbuffer(GLES30.GL_RENDERBUFFER, depthRb);
+                GLES30.glRenderbufferStorage(GLES30.GL_RENDERBUFFER, GLES30.GL_DEPTH_COMPONENT16, gridW, gridH);
+            }
+
             Vec3 f = cam.forward();
             float rlen = (float) Math.sqrt(f.z * f.z + f.x * f.x); if (rlen < 1e-5f) rlen = 1e-5f;
             float rx = f.z / rlen, ry = 0f, rz = -f.x / rlen;
@@ -292,10 +401,16 @@ public final class GLEngineView extends FrameLayout implements Engine {
             float cellAspect = (gridW * (float) cellW) / (gridH * (float) cellH);
             float maxDist = settings.renderDist() * World.CHUNK + World.CHUNK; if (maxDist < 32f) maxDist = 32f;
 
-            // ---- Pass A: raymarch into the cell texture ----
+            // upload a freshly loaded model on the GL thread
+            maybeUploadModel();
+
+            // ---- Pass A: raymarch terrain into the cell texture (writes depth) ----
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo);
             GLES30.glViewport(0, 0, gridW, gridH);
-            GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT);
+            GLES30.glEnable(GLES30.GL_DEPTH_TEST);
+            GLES30.glDepthMask(true);
+            GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT | GLES30.GL_DEPTH_BUFFER_BIT);
+            GLES30.glDepthFunc(GLES30.GL_ALWAYS); // terrain always establishes color+depth
             GLES30.glUseProgram(progA);
             GLES30.glUniform3f(uCamPos, cam.pos.x, cam.pos.y, cam.pos.z);
             GLES30.glUniform3f(uForward, f.x, f.y, f.z);
@@ -304,11 +419,31 @@ public final class GLEngineView extends FrameLayout implements Engine {
             GLES30.glUniform1f(uTanHalf, tanHalf);
             GLES30.glUniform1f(uAspect, cellAspect);
             GLES30.glUniform1f(uMaxDist, maxDist);
-            GLES30.glUniform1ui(uSeed, (int) seed);
+            GLES30.glUniform1ui(uSeed, (int) settings.seed());
             GLES30.glUniform2f(uResA, (float) gridW, (float) gridH);
             GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3);
 
+            // ---- Model pass: rasterize .obj triangles into the SAME cell buffer,
+            // depth-tested against the terrain (GL_LESS), same camera basis as pass A. ----
+            if (modelVertCount > 0) {
+                GLES30.glDepthFunc(GLES30.GL_LESS);
+                GLES30.glUseProgram(progM);
+                GLES30.glUniform3f(mCamPos, cam.pos.x, cam.pos.y, cam.pos.z);
+                GLES30.glUniform3f(mForward, f.x, f.y, f.z);
+                GLES30.glUniform3f(mRight, rx, ry, rz);
+                GLES30.glUniform3f(mUp, ux, uy, uz);
+                GLES30.glUniform1f(mTanHalf, tanHalf);
+                GLES30.glUniform1f(mAspect, cellAspect);
+                GLES30.glUniform1f(mMaxDist, maxDist);
+                GLES30.glUniform1i(mColorM, settings.color() ? 1 : 0);
+                GLES30.glUniform3f(mModelColor, 0xE0 / 255f, 0xA0 / 255f, 0x30 / 255f);
+                GLES30.glBindVertexArray(modelVao);
+                GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, modelVertCount);
+                GLES30.glBindVertexArray(0);
+            }
+
             // ---- Pass B: glyphs to the screen ----
+            GLES30.glDisable(GLES30.GL_DEPTH_TEST);
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0);
             GLES30.glViewport(0, 0, screenW, screenH);
             GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT);
@@ -324,6 +459,29 @@ public final class GLEngineView extends FrameLayout implements Engine {
             GLES30.glUniform1i(uN, glyphN);
             GLES30.glUniform1i(uColor, settings.color() ? 1 : 0);
             GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3);
+        }
+
+        private void maybeUploadModel() {
+            float[] data = null;
+            synchronized (modelLock) {
+                if (modelDirty) { data = pendingModelData; modelDirty = false; }
+            }
+            if (data == null) return;
+            FloatBuffer fb = ByteBuffer.allocateDirect(data.length * 4)
+                    .order(ByteOrder.nativeOrder()).asFloatBuffer();
+            fb.put(data).position(0);
+            GLES30.glBindVertexArray(modelVao);
+            GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, modelVbo);
+            GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, data.length * 4, fb, GLES30.GL_STATIC_DRAW);
+            int stride = 6 * 4;
+            int aPos = GLES30.glGetAttribLocation(progM, "aPos");
+            int aNormal = GLES30.glGetAttribLocation(progM, "aNormal");
+            GLES30.glEnableVertexAttribArray(aPos);
+            GLES30.glVertexAttribPointer(aPos, 3, GLES30.GL_FLOAT, false, stride, 0);
+            GLES30.glEnableVertexAttribArray(aNormal);
+            GLES30.glVertexAttribPointer(aNormal, 3, GLES30.GL_FLOAT, false, stride, 3 * 4);
+            GLES30.glBindVertexArray(0);
+            modelVertCount = data.length / 6;
         }
 
         private int link(String vsSrc, String fsSrc) {

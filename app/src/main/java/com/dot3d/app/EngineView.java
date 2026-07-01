@@ -33,7 +33,6 @@ public final class EngineView extends SurfaceView implements SurfaceHolder.Callb
     private Physics physics;
     private final Controls controls;
     private List<Tri> modelTris = null;
-    private final Vec3 modelPos = new Vec3(0, 30, 0);
 
     private final Paint ui = new Paint(Paint.ANTI_ALIAS_FLAG);
     private float walkSpeed = 6f;
@@ -71,8 +70,13 @@ public final class EngineView extends SurfaceView implements SurfaceHolder.Callb
     }
 
     public void setLoadedModel(Mesh m) {
+        // Place the model a few steps in front of the spawn point, resting on the
+        // terrain, so it is actually in view. It was previously fixed at (0,30,0) --
+        // high above the player -- so a loaded model was effectively never visible.
         List<Tri> out = new ArrayList<>();
-        m.emit(out, modelPos, 6f, 0xE0A030);
+        int mx = 0, mz = 8;
+        float ground = (world != null ? world.heightAt(mx, mz) : 0) + 4f;
+        m.emit(out, new Vec3(mx + 0.5f, ground, mz + 0.5f), 6f, 0xE0A030);
         modelTris = out;
     }
 
