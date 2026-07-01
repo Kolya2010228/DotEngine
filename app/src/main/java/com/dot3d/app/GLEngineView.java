@@ -103,7 +103,7 @@ public final class GLEngineView extends FrameLayout implements Engine {
     /** Inner GLSurfaceView; forwards touches to the shared Controls. */
     private final class GLView extends GLSurfaceView {
         GLView(Context c) { super(c); }
-        @Override public boolean onTouchEvent(MotionEvent e) { controls.onTouch(e); return true; }
+        // Touch is owned by the ControlOverlay (topmost view); GLView only renders.
     }
 
     /** Advance camera + physics one step (called from the GL thread). */
@@ -364,10 +364,15 @@ public final class GLEngineView extends FrameLayout implements Engine {
         ControlOverlay(Context c, float density) {
             super(c);
             this.density = density;
-            setClickable(false);
+            setClickable(true);
+            setFocusable(true);
+            setWillNotDraw(false);
         }
 
-        @Override public boolean onTouchEvent(MotionEvent e) { return false; }
+        // The overlay is the topmost view, so it is the reliable touch target.
+        // It feeds Controls directly (joystick left / look+jump right) and returns
+        // true so it receives the full gesture. The GLSurfaceView below only renders.
+        @Override public boolean onTouchEvent(MotionEvent e) { controls.onTouch(e); return true; }
 
         @Override protected void onDraw(Canvas c) {
             if (controls.joyActive) {
