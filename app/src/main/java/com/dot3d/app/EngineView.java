@@ -41,6 +41,8 @@ public final class EngineView extends SurfaceView implements SurfaceHolder.Callb
 
     private float fps = 0f;
     private int lastCubes = 0;
+    private float rayMs = 0f;   // EMA of raymarch+geometry time (debug HUD)
+    private float blitMs = 0f;  // EMA of ASCII blit time (debug HUD)
 
     public interface MenuListener { void onOpenMenu(); }
     private MenuListener menuListener;
@@ -165,15 +167,21 @@ public final class EngineView extends SurfaceView implements SurfaceHolder.Callb
 
     private void drawFrame() {
         ensureBuffers();
+        long t0 = System.nanoTime();
         renderer.beginFrame(cam);
         lastCubes = world.emitNear(renderer, cam.pos, settings.renderDist());
         if (modelTris != null) renderer.renderTris(modelTris);
+        long t1 = System.nanoTime();
+        rayMs += (((t1 - t0) / 1e6f) - rayMs) * 0.1f;
 
         SurfaceHolder h = getHolder();
         Canvas c = h.lockCanvas();
         if (c == null) return;
         try {
+            long b0 = System.nanoTime();
             ascii.draw(c, renderer, palette, colorOn, Color.BLACK);
+            long b1 = System.nanoTime();
+            blitMs += (((b1 - b0) / 1e6f) - blitMs) * 0.1f;
             drawUi(c);
             if (settings.debug()) drawHud(c);
         } finally {
@@ -210,6 +218,8 @@ public final class EngineView extends SurfaceView implements SurfaceHolder.Callb
         c.drawText(String.format("FPS %.0f", fps), 12, y, ui);
         y += ts + 4;
         c.drawText("cubes " + lastCubes + "  grid " + renderer.W + "x" + renderer.H, 12, y, ui);
+        y += ts + 4;
+        c.drawText(String.format("ray %.1fms  blit %.1fms  cores %d", rayMs, blitMs, Runtime.getRuntime().availableProcessors()), 12, y, ui);
         y += ts + 4;
         c.drawText(String.format("pos %.1f %.1f %.1f", cam.pos.x, cam.pos.y, cam.pos.z), 12, y, ui);
     }
