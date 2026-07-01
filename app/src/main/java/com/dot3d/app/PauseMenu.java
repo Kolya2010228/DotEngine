@@ -12,13 +12,17 @@ import android.widget.Toast;
 
 /**
  * Overlay pause menu shown when Back is pressed during the engine. Tunes the
- * current session live (grid, palette/color, sensitivity, fov, render distance,
- * seed) via the shared Settings.
+ * current session (grid, palette/color, sensitivity, fov, render distance, seed)
+ * via the shared Settings.
  *
  * Layout: a fixed title, a scrollable body of fields (so nothing is clipped on a
  * short landscape screen), and a pinned bottom button row. Sliders show their live
- * value in the label. "Apply settings" commits the fields and confirms with a toast
- * without leaving the menu; Continue / Exit also commit before acting.
+ * value in the label. Two clear actions:
+ *   - "Apply & Continue": commit the fields, confirm with a toast, and return to the
+ *     scene. MainActivity rebuilds the GPU engine on close if grid/seed/palette
+ *     changed, so the change actually takes effect (no more "applied but nothing
+ *     happens").
+ *   - "Exit to terminal": commit and leave to the terminal.
  */
 public final class PauseMenu extends LinearLayout {
     public interface Listener { void onContinue(); void onExitToTerminal(); }
@@ -103,28 +107,21 @@ public final class PauseMenu extends LinearLayout {
         row.setOrientation(HORIZONTAL);
         int gap = (int) (6 * d);
 
-        Button apply = new Button(ctx);
-        apply.setText("Apply settings");
-        apply.setOnClickListener(v -> {
-            apply(s, gw, gh, pal, color, seed, sens, fov, rd);
-            Toast.makeText(getContext(), "Settings applied \u2713", Toast.LENGTH_SHORT).show();
-        });
-
         Button cont = new Button(ctx);
-        cont.setText("Continue");
+        cont.setText("Apply & Continue");
         cont.setOnClickListener(v -> {
             apply(s, gw, gh, pal, color, seed, sens, fov, rd);
+            Toast.makeText(getContext(), "Settings applied \u2713", Toast.LENGTH_SHORT).show();
             l.onContinue();
         });
 
         Button exit = new Button(ctx);
-        exit.setText("Exit");
+        exit.setText("Exit to terminal");
         exit.setOnClickListener(v -> {
             apply(s, gw, gh, pal, color, seed, sens, fov, rd);
             l.onExitToTerminal();
         });
 
-        row.addView(apply, btnLp(gap));
         row.addView(cont, btnLp(gap));
         row.addView(exit, btnLp(gap));
         addView(row);

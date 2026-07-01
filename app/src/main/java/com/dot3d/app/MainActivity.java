@@ -11,9 +11,15 @@ import android.widget.FrameLayout;
 import java.io.InputStream;
 
 /**
- * Hosts the terminal and the engine. Flow: terminal -> `run` launches EngineView;
- * Back during the engine opens the PauseMenu overlay; "Exit to terminal" returns
- * to the terminal. Forced landscape + immersive fullscreen.
+ * Hosts the terminal and the engine. Flow: terminal -> `run` launches the engine;
+ * Back during the engine opens the PauseMenu overlay; "Exit" returns to the terminal.
+ *
+ * Settings application: when the pause menu closes, "structural" settings (grid size,
+ * seed, palette) that the GPU path only reads at creation are detected via a signature
+ * captured when the menu opened; if they changed under GPU, the engine view is rebuilt
+ * so the change actually takes effect (the software EngineView already re-applies
+ * everything on unpause). Live-read settings (fov/color/sensitivity/render distance)
+ * need no rebuild. Forced landscape + immersive fullscreen.
  */
 public final class MainActivity extends Activity implements Terminal.Host {
     private FrameLayout root;
@@ -24,6 +30,7 @@ public final class MainActivity extends Activity implements Terminal.Host {
     private Settings settings;
     private Terminal cmd;
     private Mesh pendingModel = null;
+    private String menuSig = "";
 
     private enum Mode { TERMINAL, ENGINE, MENU }
     private Mode mode = Mode.TERMINAL;
@@ -66,25 +73,40 @@ public final class MainActivity extends Activity implements Terminal.Host {
 
     @Override public void launchEngine() {
         runOnUiThread(() -> {
-            if (settings.gpu()) {
-                GLEngineView gl = new GLEngineView(this, settings);
-                engine = gl; engineView = gl;
-            } else {
-                EngineView sw = new EngineView(this, settings);
-                engine = sw; engineView = sw;
-            }
-            engine.setMenuListener(this::openMenu);
-            if (pendingModel != null) engine.setLoadedModel(pendingModel);
+            buildEngine();
             root.removeAllViews();
             root.addView(engineView);
             mode = Mode.ENGINE;
         });
     }
 
+    /** Create the engine view for the current settings.gpu() flag and wire it up. */
+    private void buildEngine() {
+        if (settings.gpu()) {
+            GLEngineView gl = new GLEngineView(this, settings);
+            engine = gl; engineView = gl;
+        } else {
+            EngineView sw = new EngineView(this, settings);
+            engine = sw; engineView = sw;
+        }
+        engine.setMenuListener(this::openMenu);
+        if (pendingModel != null) engine.setLoadedModel(pendingModel);
+    }
+
+    /**
+     * Signature of the settings a running engine reads ONLY at creation time
+     * (grid size, seed, palette). If any change while the menu is open, the GPU path
+     * must be rebuilt to reflect them; live-read settings do not need a rebuild.
+     */
+    private String settingsSig() {
+        return settings.gridW() + "x" + settings.gridH() + "|" + settings.seed() + "|" + settings.palette();
+    }
+
     private void openMenu() {
         runOnUiThread(() -> {
             if (mode != Mode.ENGINE) return;
             engine.setPaused(true);
+            menuSig = settingsSig();
             pauseMenu = new PauseMenu(this, settings, new PauseMenu.Listener() {
                 @Override public void onContinue() { closeMenu(); }
                 @Override public void onExitToTerminal() { exitToTerminal(); }
@@ -97,7 +119,19 @@ public final class MainActivity extends Activity implements Terminal.Host {
     private void closeMenu() {
         if (pauseMenu != null) root.removeView(pauseMenu);
         pauseMenu = null;
-        if (engine != null) engine.setPaused(false);
+        boolean structuralChanged = !settingsSig().equals(menuSig);
+        if (engine != null) {
+            if (structuralChanged && settings.gpu()) {
+                // GPU reads grid/seed/palette only at creation -> rebuild to apply them.
+                if (engineView != null) root.removeView(engineView);
+                buildEngine();
+                root.addView(engineView);
+            } else {
+                // Software EngineView.applySettings() runs on unpause and rebuilds
+                // everything from Settings; GPU live-read settings need no rebuild.
+                engine.setPaused(false);
+            }
+        }
         mode = Mode.ENGINE;
     }
 
