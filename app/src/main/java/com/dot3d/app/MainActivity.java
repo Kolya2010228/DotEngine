@@ -18,7 +18,8 @@ import java.io.InputStream;
 public final class MainActivity extends Activity implements Terminal.Host {
     private FrameLayout root;
     private TerminalView terminal;
-    private EngineView engine;
+    private View engineView;
+    private Engine engine;
     private PauseMenu pauseMenu;
     private Settings settings;
     private Terminal cmd;
@@ -65,11 +66,17 @@ public final class MainActivity extends Activity implements Terminal.Host {
 
     @Override public void launchEngine() {
         runOnUiThread(() -> {
-            engine = new EngineView(this, settings);
+            if (settings.gpu()) {
+                GLEngineView gl = new GLEngineView(this, settings);
+                engine = gl; engineView = gl;
+            } else {
+                EngineView sw = new EngineView(this, settings);
+                engine = sw; engineView = sw;
+            }
             engine.setMenuListener(this::openMenu);
             if (pendingModel != null) engine.setLoadedModel(pendingModel);
             root.removeAllViews();
-            root.addView(engine);
+            root.addView(engineView);
             mode = Mode.ENGINE;
         });
     }
@@ -96,7 +103,7 @@ public final class MainActivity extends Activity implements Terminal.Host {
 
     private void exitToTerminal() {
         root.removeAllViews();
-        engine = null; pauseMenu = null;
+        engine = null; engineView = null; pauseMenu = null;
         root.addView(terminal);
         mode = Mode.TERMINAL;
     }
